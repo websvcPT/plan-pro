@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "commandPrefix": "plan-pro",
+  "filesystemSlug": "plan-pro",
+  "settings": {
+    "implementationStartMode": "ask-before",
+    "planLogDefault": "ask-every-run",
+    "defaultToolProfile": "balanced",
+    "showStatusBanner": true,
+    "saveSessionPlan": true
+  },
+  "dbExploration": {
+    "enabled": true,
+    "defaultMode": "mcp",
+    "modes": {
+      "mcp": {
+        "label": "MCP tools",
+        "prompt": "Prefer configured MCP server tools for DB/data exploration when they are available."
+      },
+      "shell": {
+        "label": "Shell commands / CLIs",
+        "prompt": "Use approved shell commands or database CLIs for DB/data exploration."
+      },
+      "user-instructions": {
+        "label": "Ask for DB access instructions",
+        "prompt": "Ask the user for DB/data access instructions before attempting exploration."
+      }
+    }
+  },
+  "questions": [
+    {
+      "id": "goal",
+      "label": "Goal / desired outcome",
+      "prompt": "What outcome are you trying to achieve?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "currentState",
+      "label": "Current state / context",
+      "prompt": "What is the current state, starting point, or relevant context?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "scopeBoundaries",
+      "label": "Scope boundaries",
+      "prompt": "What is explicitly in scope, and what should stay out of scope?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "constraints",
+      "label": "Constraints / non-goals",
+      "prompt": "List any hard constraints, non-goals, or things that must not change.",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "definitionOfDone",
+      "label": "Definition of done",
+      "prompt": "What has to be true for this work to be considered complete?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "risks",
+      "label": "Risks / unknowns",
+      "prompt": "What risks, uncertainties, or open questions should be surfaced in the plan?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "preferredApproach",
+      "label": "Preferred implementation approach",
+      "prompt": "Do you prefer a specific implementation approach, pattern, or tradeoff?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "researchVsImplementation",
+      "label": "Need for research vs implementation",
+      "prompt": "Should the run stay research-first, or move straight into implementation once the plan is approved?",
+      "required": true,
+      "enabled": true
+    },
+    {
+      "id": "validationExpectations",
+      "label": "Validation / testing expectations",
+      "prompt": "What validation, testing, or acceptance checks should the plan include?",
+      "required": true,
+      "enabled": true
+    }
+  ],
+  "toolProfiles": {
+    "safe": {
+      "description": "Read-heavy planning with minimal mutation tools.",
+      "allowedTools": [
+        "view",
+        "glob",
+        "rg",
+        "ask_user",
+        "sql",
+        "task",
+        "skill",
+        "report_intent",
+        "task_complete",
+        "show_file",
+        "web_fetch",
+        "web_search",
+        "ide-get_selection",
+        "ide-get_diagnostics"
+      ]
+    },
+    "balanced": {
+      "description": "Planning plus common implementation tools for day-to-day feature work.",
+      "allowedTools": [
+        "bash",
+        "read_bash",
+        "write_bash",
+        "stop_bash",
+        "list_bash",
+        "view",
+        "glob",
+        "rg",
+        "apply_patch",
+        "ask_user",
+        "sql",
+        "task",
+        "read_agent",
+        "list_agents",
+        "write_agent",
+        "skill",
+        "show_file",
+        "web_fetch",
+        "web_search",
+        "report_intent",
+        "task_complete",
+        "ide-get_selection",
+        "ide-get_diagnostics"
+      ]
+    },
+    "full": {
+      "description": "All currently available tools in the session.",
+      "allowAllTools": true
+    }
+  },
+  "agents": {
+    "lead-planner": {
+      "enabled": true,
+      "displayName": "Lead Planner",
+      "description": "Synthesizes discovery answers, coordinates specialist agents, and produces the final execution plan.",
+      "model": "gpt-5.4",
+      "tools": [
+        "*"
+      ],
+      "promptFile": "agents/lead-planner.md"
+    },
+    "research-exploration": {
+      "enabled": true,
+      "displayName": "Research / Exploration",
+      "description": "Surfaces unknowns, traces relevant code paths, and isolates missing context before implementation.",
+      "model": "claude-sonnet-4.6",
+      "tools": [
+        "*"
+      ],
+      "promptFile": "agents/research-exploration.md"
+    },
+    "implementation-planner": {
+      "enabled": true,
+      "displayName": "Implementation Planner",
+      "description": "Turns the approved plan into concrete execution steps and implementation guidance.",
+      "model": "gpt-5.4",
+      "tools": [
+        "*"
+      ],
+      "promptFile": "agents/implementation-planner.md"
+    },
+    "validation-test-planner": {
+      "enabled": true,
+      "displayName": "Validation / Test Planner",
+      "description": "Defines verification scope, risk-based testing, and completion checks for the planned work.",
+      "model": "claude-sonnet-4.6",
+      "tools": [
+        "*"
+      ],
+      "promptFile": "agents/validation-test-planner.md"
+    },
+    "architecture-reviewer": {
+      "enabled": true,
+      "displayName": "Architecture Reviewer",
+      "description": "Reviews the big-picture design, boundaries, and long-term maintainability of the proposed plan.",
+      "model": "gpt-5.4",
+      "tools": [
+        "*"
+      ],
+      "promptFile": "agents/architecture-reviewer.md"
+    }
+  },
+  "routing": {
+    "leadAgent": "lead-planner",
+    "planningSequence": [
+      "architecture-reviewer",
+      "research-exploration",
+      "lead-planner",
+      "validation-test-planner"
+    ],
+    "implementationAgent": "implementation-planner"
+  },
+  "templates": {
+    "timestampFormat": "YYYY-MM-DD HH:ii:ss",
+    "planFileNamePattern": "{name}-{date-time}-plan.md",
+    "planTemplateFile": "templates/plan-template.md",
+    "logTemplateFile": "templates/live-log-template.md"
+  },
+  "prompts": {
+    "basePlanningPromptFile": "prompts/base-planning.md",
+    "implementationPromptFile": "prompts/implementation-follow-up.md",
+    "userInstructionsFile": "prompts/user-instructions.md"
+  }
+}

@@ -1,0 +1,3 @@
+### {{TIMESTAMP}} - {{ENTRY_KIND}}
+
+{{ENTRY_CONTENT}}

@@ -1,0 +1,7 @@
+{
+  "name": "plan-pro",
+  "author": "WebSVC",
+  "version": "1.0.0",
+  "filesystemSlug": "plan-pro",
+  "description": "Personal Copilot CLI planning extension with slash-command wizard, custom planning agents, and live project plan logging."
+}

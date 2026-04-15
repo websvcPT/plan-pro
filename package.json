@@ -1,0 +1,13 @@
+{
+  "name": "plan-pro-dev",
+  "private": true,
+  "type": "module",
+  "author": "WebSVC",
+  "license": "MIT",
+  "scripts": {
+    "check": "bash scripts/check.sh",
+    "test": "node --test tests/*.test.mjs",
+    "test:unit": "node --test tests/plan-pro-core.test.mjs",
+    "test:integration": "node --test tests/install-scripts.test.mjs"
+  }
+}
