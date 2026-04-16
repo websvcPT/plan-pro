@@ -28,6 +28,10 @@ const USER_ROOT = join(RUNTIME_ROOT, "user");
 const STATE_ROOT = join(RUNTIME_ROOT, "state");
 const ACTIVE_RUN_PATH = join(STATE_ROOT, "active-run.json");
 const INSTALL_METADATA_PATH = join(STATE_ROOT, "install.json");
+const DEBUG_LOG_PATH = join(STATE_ROOT, "debug.log");
+const DEBUG_COMMAND_USAGE = `/${COMMAND_PREFIX}:debug on|off`;
+const DEBUG_ENABLE_COMMAND = `/${COMMAND_PREFIX}:debug on`;
+const DEBUG_DISABLE_COMMAND = `/${COMMAND_PREFIX}:debug off`;
 
 const EXTENSION_ROOT = dirname(fileURLToPath(import.meta.url));
 const USER_EXTENSIONS_HOME = resolve(join(COPILOT_HOME, "extensions"));
@@ -39,7 +43,9 @@ const CORE_MODULE_SPECIFIER = IS_USER_EXTENSION
 const {
     buildPlanFileName,
     deepMerge,
+    formatDebugLogEntry,
     formatTimestamp,
+    parseDebugCommandInput,
     renderDbExplorationSummary,
     renderTemplate,
     slugify,
@@ -59,6 +65,7 @@ const runtime = {
     toolCalls: new Map(),
     currentModel: undefined,
     suspendAutoLog: false,
+    debugEnabled: false,
 };
 
 let session;
@@ -180,6 +187,80 @@ function getInstallMetadata() {
 
 function getManifest() {
     return deepMerge(FALLBACK_MANIFEST, readJson(join(getResourcesRoot(), "manifest.json"), {}));
+}
+
+function getDebugLogPath() {
+    ensureDir(STATE_ROOT);
+    return DEBUG_LOG_PATH;
+}
+
+function isDebugEnabled() {
+    return runtime.debugEnabled === true;
+}
+
+function getDebugModeLabel() {
+    return isDebugEnabled() ? "on (current session only)" : "off";
+}
+
+function writeDebugLog({ scope = "runtime", event = "info", detail = "", metadata, force = false } = {}) {
+    if (!force && !isDebugEnabled()) {
+        return;
+    }
+
+    const entry = formatDebugLogEntry({
+        timestamp: formatTimestamp(),
+        sessionId: session?.sessionId || "unknown",
+        scope,
+        event,
+        detail,
+        metadata,
+    });
+    appendFileSync(getDebugLogPath(), `${entry}\n`, "utf8");
+}
+
+async function showDebugBanner(commandName, detail) {
+    if (!isDebugEnabled()) {
+        return;
+    }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "debug:banner",
+        detail,
+    });
+    await session.log(
+        [
+            `**${commandName}** debug mode is on for this session.`,
+            "",
+            detail,
+            "",
+            `Debug log: \`${getDebugLogPath()}\``,
+            `If this command seems stuck, inspect the log and run \`/${COMMAND_PREFIX}:doctor\`.`,
+            `Disable debug mode with \`${DEBUG_DISABLE_COMMAND}\`.`,
+        ].join("\n"),
+        { ephemeral: true },
+    );
+}
+
+async function showDebugStep(commandName, detail, metadata) {
+    if (!isDebugEnabled()) {
+        return;
+    }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "interactive:before",
+        detail,
+        metadata,
+    });
+    await session.log(
+        [
+            `**plan-pro debug** ${detail}`,
+            "",
+            `Debug log: \`${getDebugLogPath()}\``,
+        ].join("\n"),
+        { ephemeral: true },
+    );
 }
 
 function ensureUserScaffold() {
@@ -620,6 +701,12 @@ function handleEvent(event) {
         }
         break;
     case "session.shutdown":
+        writeDebugLog({
+            scope: "session",
+            event: "session:shutdown",
+            detail: "The Copilot CLI session ended.",
+            force: true,
+        });
         if (getActiveRun()?.logPath) {
             appendProjectLogEntry(loadEffectiveConfig(), getActiveRun(), "Session ended", "The Copilot CLI session ended.");
         }
@@ -643,6 +730,8 @@ async function logStatusTable({ compact = false } = {}) {
         ["Current agent", currentSnapshot.agentName || "_default_"],
         ["Active tool profile", currentRun?.toolProfile || "_none_"],
         ["Project plan/log", currentRun?.logPath || "_not active_"],
+        ["Debug mode", getDebugModeLabel()],
+        ["Debug log", `\`${getDebugLogPath()}\``],
     ];
 
     const agentRows = listLoadedAgents(config, currentSnapshot.agentName);
@@ -672,17 +761,31 @@ async function logStatusTable({ compact = false } = {}) {
 async function handleSetupCommand() {
     ensureUserScaffold();
 
+    const commandName = `/${COMMAND_PREFIX}:setup`;
     const currentConfig = loadEffectiveConfig({ seedUserConfig: true });
     const toolProfiles = Object.keys(currentConfig.toolProfiles || {});
 
+    writeDebugLog({
+        scope: commandName,
+        event: "command:start",
+        detail: "Starting setup command.",
+    });
+    await showDebugBanner(commandName, "Interactive setup prompts will open in the Copilot UI.");
+
     if (!session.capabilities.ui?.elicitation) {
+        writeDebugLog({
+            scope: commandName,
+            event: "command:error",
+            detail: "Interactive elicitation support is unavailable.",
+        });
         await session.log("plan-pro setup requires interactive elicitation support.", { level: "error" });
         return;
     }
 
+    await showDebugStep(commandName, "Opening the setup configuration prompt.", { step: "setup-config" });
     const result = await session.ui.elicitation({
         message: "Configure plan-pro defaults",
-        schema: {
+        requestedSchema: {
             type: "object",
             properties: {
                 implementationStartMode: {
@@ -718,9 +821,22 @@ async function handleSetupCommand() {
     });
 
     if (result.action !== "accept") {
+        writeDebugLog({
+            scope: commandName,
+            event: "interactive:cancelled",
+            detail: "Setup configuration prompt was dismissed.",
+            metadata: { action: result.action, step: "setup-config" },
+        });
         await session.log("plan-pro setup cancelled.", { ephemeral: true });
         return;
     }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "interactive:accepted",
+        detail: "Setup configuration prompt completed.",
+        metadata: { step: "setup-config" },
+    });
 
     const nextUserConfig = deepMerge(readJson(getUserConfigPath(), {}), {
         settings: {
@@ -739,6 +855,16 @@ async function handleSetupCommand() {
 
     const installMetadata = getInstallMetadata();
     const manifest = getManifest();
+
+    writeDebugLog({
+        scope: commandName,
+        event: "command:complete",
+        detail: "Setup command completed successfully.",
+        metadata: {
+            userConfigPath: getUserConfigPath(),
+            installRoot: installMetadata.installRoot || INSTALL_ROOT,
+        },
+    });
 
     await session.log(
         [
@@ -761,8 +887,14 @@ async function handleSetupCommand() {
     );
 }
 
-async function collectRunOptions(config, initialGoal) {
+async function collectRunOptions(config, initialGoal, commandName = `/${COMMAND_PREFIX}`) {
     if (!session.capabilities.ui?.elicitation) {
+        writeDebugLog({
+            scope: commandName,
+            event: "interactive:unavailable",
+            detail: "Run settings prompt could not open because interactive elicitation is unavailable.",
+            metadata: { step: "run-settings" },
+        });
         return null;
     }
 
@@ -808,9 +940,10 @@ async function collectRunOptions(config, initialGoal) {
         required.push("saveProjectPlan", "projectPlanDirectory", "projectPlanName", "trackContinuously");
     }
 
+    await showDebugStep(commandName, "Opening the run settings prompt.", { step: "run-settings" });
     const result = await session.ui.elicitation({
         message: "Choose plan-pro run settings",
-        schema: {
+        requestedSchema: {
             type: "object",
             properties,
             required,
@@ -818,8 +951,21 @@ async function collectRunOptions(config, initialGoal) {
     });
 
     if (result.action !== "accept") {
+        writeDebugLog({
+            scope: commandName,
+            event: "interactive:cancelled",
+            detail: "Run settings prompt was dismissed.",
+            metadata: { action: result.action, step: "run-settings" },
+        });
         return null;
     }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "interactive:accepted",
+        detail: "Run settings prompt completed.",
+        metadata: { step: "run-settings" },
+    });
 
     const saveProjectPlan =
         config.settings?.planLogDefault === "never-save" ? false : Boolean(result.content.saveProjectPlan);
@@ -837,20 +983,33 @@ async function collectRunOptions(config, initialGoal) {
     };
 }
 
-async function collectDbExplorationOptions(config) {
+async function collectDbExplorationOptions(config, commandName = `/${COMMAND_PREFIX}`) {
     if (!session.capabilities.ui?.elicitation || config.dbExploration?.enabled === false) {
+        writeDebugLog({
+            scope: commandName,
+            event: "db-exploration:skipped",
+            detail: "DB/data exploration prompt is unavailable or disabled in config.",
+        });
         return { enabled: false };
     }
 
+    await showDebugStep(commandName, "Asking whether DB/data exploration is needed.", { step: "db-confirm" });
     const useDbAccess = await session.ui.confirm("Should this run include DB/data exploration?");
     if (!useDbAccess) {
+        writeDebugLog({
+            scope: commandName,
+            event: "db-exploration:disabled",
+            detail: "DB/data exploration was not requested for this run.",
+            metadata: { step: "db-confirm" },
+        });
         return { enabled: false };
     }
 
     const modes = Object.entries(config.dbExploration?.modes || {});
+    await showDebugStep(commandName, "Opening the DB/data exploration configuration prompt.", { step: "db-config" });
     const result = await session.ui.elicitation({
         message: "Configure DB/data exploration",
-        schema: {
+        requestedSchema: {
             type: "object",
             properties: {
                 dbAccessMode: {
@@ -873,17 +1032,35 @@ async function collectDbExplorationOptions(config) {
     });
 
     if (result.action !== "accept") {
+        writeDebugLog({
+            scope: commandName,
+            event: "interactive:cancelled",
+            detail: "DB/data exploration prompt was dismissed.",
+            metadata: { action: result.action, step: "db-config" },
+        });
         return null;
     }
 
     let dbAccessInstructions = result.content.dbAccessInstructions || "";
     if (!dbAccessInstructions && result.content.dbAccessMode === "user-instructions" && typeof session.ui.input === "function") {
+        await showDebugStep(commandName, "Opening DB/data access instructions input.", { step: "db-instructions" });
         dbAccessInstructions = await session.ui.input("Provide DB/data access instructions for this run", {
             title: "DB/data access instructions",
             description: "These instructions are injected into the planning and implementation prompts.",
             default: "",
         }) || "";
     }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "interactive:accepted",
+        detail: "DB/data exploration options captured.",
+        metadata: {
+            step: "db-config",
+            mode: result.content.dbAccessMode,
+            hasInstructions: Boolean(dbAccessInstructions),
+        },
+    });
 
     return {
         enabled: true,
@@ -892,8 +1069,14 @@ async function collectDbExplorationOptions(config) {
     };
 }
 
-async function collectDiscoveryAnswers(config, initialGoal) {
+async function collectDiscoveryAnswers(config, initialGoal, commandName = `/${COMMAND_PREFIX}`) {
     if (!session.capabilities.ui?.elicitation) {
+        writeDebugLog({
+            scope: commandName,
+            event: "interactive:unavailable",
+            detail: "Discovery prompt could not open because interactive elicitation is unavailable.",
+            metadata: { step: "discovery" },
+        });
         return null;
     }
 
@@ -915,9 +1098,10 @@ async function collectDiscoveryAnswers(config, initialGoal) {
         }
     }
 
+    await showDebugStep(commandName, "Opening the planning brief prompt.", { step: "discovery" });
     const result = await session.ui.elicitation({
         message: "Capture the planning brief",
-        schema: {
+        requestedSchema: {
             type: "object",
             properties,
             required,
@@ -925,30 +1109,69 @@ async function collectDiscoveryAnswers(config, initialGoal) {
     });
 
     if (result.action !== "accept") {
+        writeDebugLog({
+            scope: commandName,
+            event: "interactive:cancelled",
+            detail: "Planning brief prompt was dismissed.",
+            metadata: { action: result.action, step: "discovery" },
+        });
         return null;
     }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "interactive:accepted",
+        detail: "Planning brief prompt completed.",
+        metadata: { step: "discovery" },
+    });
 
     return result.content;
 }
 
-async function maybeStartImplementation(config, planContent) {
+async function maybeStartImplementation(config, planContent, commandName = `/${COMMAND_PREFIX}`) {
     if (config.settings?.implementationStartMode === "auto-start") {
+        writeDebugLog({
+            scope: commandName,
+            event: "implementation:auto-start",
+            detail: "Implementation auto-start is enabled for this run.",
+        });
         return { approved: true, notes: "" };
     }
 
+    await showDebugStep(commandName, "Asking whether implementation should start now.", { step: "implementation-confirm" });
     const approved = await session.ui.confirm("Start implementation now using this plan?");
     if (!approved) {
+        writeDebugLog({
+            scope: commandName,
+            event: "implementation:declined",
+            detail: "Implementation was not started.",
+            metadata: { step: "implementation-confirm" },
+        });
         return { approved: false, notes: "" };
     }
 
     if (typeof session.ui.input !== "function") {
+        writeDebugLog({
+            scope: commandName,
+            event: "implementation:approved",
+            detail: "Implementation was approved without additional notes input support.",
+            metadata: { step: "implementation-confirm" },
+        });
         return { approved: true, notes: "" };
     }
 
+    await showDebugStep(commandName, "Opening the implementation notes input.", { step: "implementation-notes" });
     const notes = await session.ui.input("Additional notes before implementation starts", {
         title: "Implementation notes",
         description: "Optional notes are appended to the implementation kickoff prompt.",
         default: "",
+    });
+
+    writeDebugLog({
+        scope: commandName,
+        event: "implementation:approved",
+        detail: "Implementation was approved.",
+        metadata: { step: "implementation-notes", hasNotes: Boolean(notes) },
     });
 
     return {
@@ -959,34 +1182,67 @@ async function maybeStartImplementation(config, planContent) {
 
 async function handlePlanCommand(commandContext) {
     ensureUserScaffold();
+    const commandName = `/${COMMAND_PREFIX}`;
     const manifest = getManifest();
     const config = loadEffectiveConfig({ seedUserConfig: true });
     const initialGoal = commandContext.args?.trim() || "";
 
+    writeDebugLog({
+        scope: commandName,
+        event: "command:start",
+        detail: "Starting planning command.",
+    });
+    await showDebugBanner(commandName, "Interactive planning prompts will open in the Copilot UI.");
+
     if (!session.capabilities.ui?.elicitation) {
+        writeDebugLog({
+            scope: commandName,
+            event: "command:error",
+            detail: "Interactive elicitation support is unavailable.",
+        });
         await session.log("plan-pro requires interactive elicitation support.", { level: "error" });
         return;
     }
 
     if (config.settings?.showStatusBanner !== false) {
+        writeDebugLog({
+            scope: commandName,
+            event: "status:banner",
+            detail: "Showing compact status banner before planning.",
+        });
         await logStatusTable({ compact: true });
     }
 
-    const runOptions = await collectRunOptions(config, initialGoal);
+    const runOptions = await collectRunOptions(config, initialGoal, commandName);
     if (!runOptions) {
+        writeDebugLog({
+            scope: commandName,
+            event: "command:cancelled",
+            detail: "Planning command ended before planning started.",
+        });
         await session.log("plan-pro run cancelled before planning started.", { ephemeral: true });
         return;
     }
 
-    const dbExploration = await collectDbExplorationOptions(config);
+    const dbExploration = await collectDbExplorationOptions(config, commandName);
     if (!dbExploration) {
+        writeDebugLog({
+            scope: commandName,
+            event: "command:cancelled",
+            detail: "Planning command ended while configuring DB/data exploration.",
+        });
         await session.log("plan-pro run cancelled while configuring DB/data exploration.", { ephemeral: true });
         return;
     }
     runOptions.dbExploration = dbExploration;
 
-    const discoveryAnswers = await collectDiscoveryAnswers(config, initialGoal);
+    const discoveryAnswers = await collectDiscoveryAnswers(config, initialGoal, commandName);
     if (!discoveryAnswers) {
+        writeDebugLog({
+            scope: commandName,
+            event: "command:cancelled",
+            detail: "Planning command ended while gathering discovery answers.",
+        });
         await session.log("plan-pro run cancelled while gathering discovery answers.", { ephemeral: true });
         return;
     }
@@ -1007,10 +1263,22 @@ async function handlePlanCommand(commandContext) {
     setActiveRun(runState);
     runtime.suspendAutoLog = true;
 
+    writeDebugLog({
+        scope: commandName,
+        event: "planning:activate",
+        detail: "Activating planning mode and lead planner.",
+        metadata: { planningRole, toolProfile: runOptions.toolProfile },
+    });
     await session.rpc.mode.set({ mode: "plan" }).catch(() => undefined);
     await activateRole(config, planningRole);
 
     const planningPrompt = buildPlanningPrompt(config, manifest, runOptions.toolProfile, discoveryAnswers, runOptions);
+    writeDebugLog({
+        scope: commandName,
+        event: "planning:request",
+        detail: "Sending planning prompt to the assistant.",
+        metadata: { planningRole },
+    });
     const planningResponse = await session.sendAndWait({ prompt: planningPrompt });
     const planContent = planningResponse?.data?.content?.trim();
 
@@ -1018,18 +1286,34 @@ async function handlePlanCommand(commandContext) {
         runtime.suspendAutoLog = false;
         setActiveRun(null);
         await restoreSessionSnapshot(previousSnapshot);
+        writeDebugLog({
+            scope: commandName,
+            event: "planning:error",
+            detail: "The assistant did not return plan content.",
+        });
         await session.log("plan-pro did not receive plan content from the assistant.", { level: "error" });
         return;
     }
 
+    writeDebugLog({
+        scope: commandName,
+        event: "planning:response",
+        detail: "Received plan content from the assistant.",
+    });
     await session.rpc.plan.update({ content: planContent }).catch(() => undefined);
 
     if (runOptions.saveProjectPlan) {
         writeInitialProjectPlan(config, manifest, runOptions, discoveryAnswers, planContent);
         appendProjectLogEntry(config, runState, "Initial plan snapshot", planContent);
+        writeDebugLog({
+            scope: commandName,
+            event: "planning:file-write",
+            detail: "Wrote the initial project plan/log file.",
+            metadata: { path: runOptions.projectPlanPath },
+        });
     }
 
-    const implementationDecision = await maybeStartImplementation(config, planContent);
+    const implementationDecision = await maybeStartImplementation(config, planContent, commandName);
 
     if (!implementationDecision.approved) {
         runtime.suspendAutoLog = false;
@@ -1037,6 +1321,12 @@ async function handlePlanCommand(commandContext) {
             setActiveRun(null);
         }
         await restoreSessionSnapshot(previousSnapshot);
+        writeDebugLog({
+            scope: commandName,
+            event: "command:complete",
+            detail: "Planning command finished without starting implementation.",
+            metadata: { savedProjectPlan: runOptions.saveProjectPlan },
+        });
         await session.log(
             [
                 `**${manifest.name} ${manifest.version}** captured the plan.`,
@@ -1052,18 +1342,50 @@ async function handlePlanCommand(commandContext) {
     }
 
     const implementationRole = config.routing?.implementationAgent || "implementation-planner";
+    writeDebugLog({
+        scope: commandName,
+        event: "implementation:activate",
+        detail: "Switching to the implementation agent.",
+        metadata: { implementationRole },
+    });
     await session.rpc.mode.set({ mode: previousSnapshot.mode === "plan" ? "interactive" : previousSnapshot.mode }).catch(() => undefined);
     await activateRole(config, implementationRole);
 
     const implementationPrompt = buildImplementationPrompt(config, planContent, implementationDecision.notes, runOptions);
+    writeDebugLog({
+        scope: commandName,
+        event: "implementation:request",
+        detail: "Sending implementation kickoff prompt to the assistant.",
+        metadata: { implementationRole, hasNotes: Boolean(implementationDecision.notes) },
+    });
     const implementationResponse = await session.sendAndWait({ prompt: implementationPrompt });
     const implementationSummary = implementationResponse?.data?.content?.trim() || "Implementation started.";
+    writeDebugLog({
+        scope: commandName,
+        event: "implementation:response",
+        detail: "Received implementation kickoff response from the assistant.",
+    });
 
     if (runOptions.saveProjectPlan) {
         appendProjectLogEntry(config, runState, "Implementation kickoff", implementationSummary);
+        writeDebugLog({
+            scope: commandName,
+            event: "implementation:file-append",
+            detail: "Appended the implementation kickoff summary to the project plan/log.",
+            metadata: { path: runOptions.projectPlanPath },
+        });
     }
 
     runtime.suspendAutoLog = false;
+    writeDebugLog({
+        scope: commandName,
+        event: "command:complete",
+        detail: "Planning command completed and implementation started.",
+        metadata: {
+            savedProjectPlan: runOptions.saveProjectPlan,
+            trackContinuously: runOptions.trackContinuously,
+        },
+    });
 
     await session.log(
         [
@@ -1080,13 +1402,101 @@ async function handlePlanCommand(commandContext) {
     );
 }
 
+async function handleDebugCommand(commandContext) {
+    ensureUserScaffold();
+
+    const manifest = getManifest();
+    const commandName = `/${COMMAND_PREFIX}:debug`;
+    const parsed = parseDebugCommandInput(commandContext.args);
+    const debugLogPath = getDebugLogPath();
+
+    if (!parsed.ok) {
+        await session.log(
+            [
+                `**${manifest.name} ${manifest.version}** debug mode is ${getDebugModeLabel()}.`,
+                "",
+                `${parsed.error}`,
+                "",
+                `Usage: \`${DEBUG_COMMAND_USAGE}\``,
+                `Debug log: \`${debugLogPath}\``,
+            ].join("\n"),
+            { level: "warning" },
+        );
+        return;
+    }
+
+    if (parsed.mode === "status") {
+        await session.log(
+            [
+                `**${manifest.name} ${manifest.version}** debug mode is ${getDebugModeLabel()}.`,
+                "",
+                `Usage: \`${DEBUG_COMMAND_USAGE}\``,
+                `Debug log: \`${debugLogPath}\``,
+                isDebugEnabled()
+                    ? `Troubleshooting breadcrumbs will appear when you run \`/${COMMAND_PREFIX}\` or \`/${COMMAND_PREFIX}:setup\`.`
+                    : `Run \`${DEBUG_ENABLE_COMMAND}\` before invoking \`/${COMMAND_PREFIX}\` or \`/${COMMAND_PREFIX}:setup\` to capture breadcrumbs.`,
+            ].join("\n"),
+        );
+        return;
+    }
+
+    if (parsed.mode === "on") {
+        runtime.debugEnabled = true;
+        writeDebugLog({
+            scope: commandName,
+            event: "debug:on",
+            detail: "Debug mode enabled for the current session.",
+            metadata: { currentSessionOnly: true },
+        });
+        await session.log(
+            [
+                `**${manifest.name} ${manifest.version}** debug mode is on for the current session.`,
+                "",
+                `Debug log: \`${debugLogPath}\``,
+                `Run \`/${COMMAND_PREFIX}\` or \`/${COMMAND_PREFIX}:setup\` to capture troubleshooting breadcrumbs.`,
+                `Disable debug mode with \`${DEBUG_DISABLE_COMMAND}\`.`,
+            ].join("\n"),
+        );
+        return;
+    }
+
+    writeDebugLog({
+        scope: commandName,
+        event: "debug:off",
+        detail: "Debug mode disabled for the current session.",
+        metadata: { currentSessionOnly: true },
+        force: true,
+    });
+    runtime.debugEnabled = false;
+    await session.log(
+            [
+                `**${manifest.name} ${manifest.version}** debug mode is off for the current session.`,
+                "",
+                `Debug log: \`${debugLogPath}\``,
+                `Re-enable it with \`${DEBUG_ENABLE_COMMAND}\`.`,
+            ].join("\n"),
+    );
+}
+
 async function handleDoctorCommand() {
     ensureUserScaffold();
 
+    const manifest = getManifest();
     const manifestPath = join(getResourcesRoot(), "manifest.json");
     const configPath = getUserConfigPath();
     const configCheck = tryReadJson(configPath);
     const activeRun = getActiveRun();
+    const debugLogPath = getDebugLogPath();
+    writeDebugLog({
+        scope: `/${COMMAND_PREFIX}:doctor`,
+        event: "command:start",
+        detail: "Running diagnostics.",
+    });
+    const summaryRows = [
+        ["Debug mode", getDebugModeLabel()],
+        ["Debug log", `\`${debugLogPath}\``],
+        ["Active project plan/log", activeRun?.logPath ? `\`${activeRun.logPath}\`` : "_not active_"],
+    ];
     const checks = [
         ["Package manifest", pathExists(manifestPath), manifestPath],
         ["User extension entrypoint", pathExists(join(USER_EXTENSION_ROOT, "extension.mjs")), join(USER_EXTENSION_ROOT, "extension.mjs")],
@@ -1095,12 +1505,15 @@ async function handleDoctorCommand() {
         ["User instructions prompt", pathExists(join(USER_ROOT, "prompts", "user-instructions.md")), join(USER_ROOT, "prompts", "user-instructions.md")],
         ["Plan template override", pathExists(join(USER_ROOT, "templates", "plan-template.md")), join(USER_ROOT, "templates", "plan-template.md")],
         ["Live-log template override", pathExists(join(USER_ROOT, "templates", "live-log-template.md")), join(USER_ROOT, "templates", "live-log-template.md")],
+        ["Debug log file", !isDebugEnabled() || pathExists(debugLogPath), debugLogPath],
         ["Active project plan/log", activeRun?.logPath ? pathExists(activeRun.logPath) : true, activeRun?.logPath || "_not active_"],
     ];
 
     await session.log(
         [
-            `**${getManifest().name} ${getManifest().version}** diagnostics`,
+            `**${manifest.name} ${manifest.version}** diagnostics`,
+            "",
+            formatMarkdownTable(["Field", "Value"], summaryRows),
             "",
             formatMarkdownTable(
                 ["Check", "Status", "Details"],
@@ -1192,6 +1605,11 @@ session = await joinSession({
             handler: () => logStatusTable(),
         },
         {
+            name: `${COMMAND_PREFIX}:debug`,
+            description: "Enable or disable session debug logging for plan-pro commands",
+            handler: handleDebugCommand,
+        },
+        {
             name: `${COMMAND_PREFIX}:update`,
             description: "Pull the latest checkout and refresh the personal install",
             handler: handleUpdateCommand,
@@ -1237,4 +1655,11 @@ if (runtime.activeRun?.sessionId !== session.sessionId) {
 }
 
 const startupManifest = getManifest();
+writeDebugLog({
+    scope: "session",
+    event: "extension:loaded",
+    detail: `Loaded ${startupManifest.name} ${startupManifest.version}.`,
+    metadata: { debugMode: getDebugModeLabel() },
+    force: true,
+});
 await session.log(`Loaded ${startupManifest.name} ${startupManifest.version}`, { ephemeral: true });

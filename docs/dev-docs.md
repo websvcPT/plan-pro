@@ -35,6 +35,23 @@ tar -czf "$TMP_DIR/plan-pro-release.tar.gz" -C .. plan-pro
 COPILOT_HOME="$TMP_DIR/copilot-home" PLAN_PRO_ARCHIVE_FILE="$TMP_DIR/plan-pro-release.tar.gz" VERSION=v1.0.0 bash scripts/install-from-release.sh
 ```
 
+## Runtime debug logging
+
+Use the slash command below to enable or disable debug breadcrumbs for the current Copilot session:
+
+```text
+/plan-pro:debug on|off
+```
+
+Behavior notes:
+
+1. The toggle is **session-only**; it does not persist into `~/.copilot/plan-pro/user/config.json`
+2. Runtime diagnostics are appended to `~/.copilot/plan-pro/state/debug.log`
+3. `/plan-pro` and `/plan-pro:setup` only show the extra on-screen troubleshooting guidance while debug mode is enabled
+4. `/plan-pro:doctor` reports the current debug state and log path
+
+If you are reproducing a stuck interactive flow, enable debug mode first, rerun the command, then inspect `debug.log`.
+
 ## How config works
 
 `resources/default-config.json` is the base contract. At runtime, the extension merges it with `~/.copilot/plan-pro/user/config.json`.

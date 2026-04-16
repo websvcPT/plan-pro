@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import {
     buildPlanFileName,
     deepMerge,
+    formatDebugLogEntry,
     formatTimestamp,
+    parseDebugCommandInput,
     renderDbExplorationSummary,
 } from "../src/plan-pro-core.mjs";
 
@@ -46,6 +48,32 @@ test("buildPlanFileName uses the configured pattern and slugifies the name seed"
     });
 
     assert.equal(fileName, "billing-api-2026-04-15-00-27-44-plan.md");
+});
+
+test("parseDebugCommandInput handles on, off, and status inputs", () => {
+    assert.deepEqual(parseDebugCommandInput("on"), { ok: true, mode: "on" });
+    assert.deepEqual(parseDebugCommandInput(" OFF "), { ok: true, mode: "off" });
+    assert.deepEqual(parseDebugCommandInput(""), { ok: true, mode: "status" });
+    assert.deepEqual(parseDebugCommandInput("verbose"), {
+        ok: false,
+        error: 'Expected "on" or "off", received "verbose".',
+    });
+});
+
+test("formatDebugLogEntry renders a readable append-only log line", () => {
+    const line = formatDebugLogEntry({
+        timestamp: "2026-04-15 19:20:00",
+        sessionId: "session-123",
+        scope: "plan-pro",
+        event: "command:start",
+        detail: "Opening run settings prompt.",
+        metadata: { debugMode: "session-only" },
+    });
+
+    assert.equal(
+        line,
+        '2026-04-15 19:20:00 | session=session-123 | scope=plan-pro | event=command:start | Opening run settings prompt. | meta={"debugMode":"session-only"}',
+    );
 });
 
 test("renderDbExplorationSummary includes mode guidance and user instructions", () => {

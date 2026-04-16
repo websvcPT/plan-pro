@@ -49,8 +49,26 @@ Once loaded, the extension registers these slash commands:
 | `/plan-pro` | Start the planning wizard, collect discovery answers, create the plan, and optionally begin implementation |
 | `/plan-pro:setup` | Seed/update the personal config and install the user-scoped copy |
 | `/plan-pro:status` | Show the current plan-pro version, loaded agents, configured models, active tool profile, and background task status |
+| `/plan-pro:debug on|off` | Enable or disable current-session debug breadcrumbs and write runtime diagnostics to `~/.copilot/plan-pro/state/debug.log` |
 | `/plan-pro:update` | Pull the latest Git checkout (when available) and resync the personal install |
 | `/plan-pro:doctor` | Validate install paths, config, templates, and active live-log state |
+
+## Troubleshooting stuck slash commands
+
+If `/plan-pro` or `/plan-pro:setup` appears to freeze, turn on debug mode for the current session before retrying:
+
+```text
+/plan-pro:debug on
+```
+
+With debug mode enabled:
+
+1. Retry `/plan-pro` or `/plan-pro:setup`
+2. Check the runtime log at `~/.copilot/plan-pro/state/debug.log`
+3. Run `/plan-pro:doctor` to confirm the install paths, config, and current debug/log state
+4. Turn debug mode back off with `/plan-pro:debug off` when you are done
+
+The extra on-screen troubleshooting breadcrumbs only appear while debug mode is enabled.
 
 ## Personalize it
 

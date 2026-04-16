@@ -73,6 +73,46 @@ export function buildPlanFileName({
     return sanitized.endsWith(".md") ? sanitized : `${sanitized}.md`;
 }
 
+export function parseDebugCommandInput(input = "") {
+    const normalized = String(input || "").trim().toLowerCase();
+
+    if (!normalized) {
+        return { ok: true, mode: "status" };
+    }
+
+    if (normalized === "on" || normalized === "off") {
+        return { ok: true, mode: normalized };
+    }
+
+    return {
+        ok: false,
+        error: `Expected "on" or "off", received "${normalized}".`,
+    };
+}
+
+export function formatDebugLogEntry({
+    timestamp = formatTimestamp(),
+    sessionId = "unknown",
+    scope = "runtime",
+    event = "info",
+    detail = "",
+    metadata,
+} = {}) {
+    const parts = [
+        timestamp,
+        `session=${sessionId}`,
+        `scope=${scope}`,
+        `event=${event}`,
+        String(detail || "").trim() || "_No detail provided._",
+    ];
+
+    if (metadata !== undefined) {
+        parts.push(`meta=${JSON.stringify(metadata)}`);
+    }
+
+    return parts.join(" | ");
+}
+
 export function renderDbExplorationSummary(config, dbExploration) {
     if (!dbExploration?.enabled) {
         return "Database/data exploration is not enabled for this run.";
